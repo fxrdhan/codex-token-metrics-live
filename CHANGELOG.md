@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.2.1
+
+- Add the dashboard HTML template to the repository.
+- Embed the dashboard template in the binary as the default UI.
+- Include the dashboard template in release archives.
+
 ## v0.2.0
 
 - Attribute token usage and estimated cost to the active model for each turn.

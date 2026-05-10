@@ -13,6 +13,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const CACHE_VERSION: u32 = 3;
+const DEFAULT_TEMPLATE: &str = include_str!("../assets/codex-token-metrics.html");
 
 #[derive(Clone)]
 struct Config {
@@ -1144,10 +1145,8 @@ fn broadcast(state: &Arc<AppState>, message: SseMessage) {
 
 fn render_live_html(state: &Arc<AppState>) -> String {
     let data = get_metrics_snapshot(state);
-    let template = match fs::read_to_string(&state.config.template_path) {
-        Ok(template) => template,
-        Err(_) => return fallback_html(&data),
-    };
+    let template = fs::read_to_string(&state.config.template_path)
+        .unwrap_or_else(|_| DEFAULT_TEMPLATE.to_string());
     inject_realtime_client(&inject_data(&template, &data))
 }
 
@@ -1213,13 +1212,6 @@ fn inject_realtime_client(html: &str) -> String {
 })();
 </script>"#;
     html.replace("</body>", &format!("{snippet}\n</body>"))
-}
-
-fn fallback_html(data: &Metrics) -> String {
-    format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Codex Metrics Live</title></head><body><pre>{}</pre></body></html>",
-        serde_json::to_string_pretty(data).unwrap_or_else(|_| "{}".to_string())
-    )
 }
 
 fn value_u64(value: Option<&Value>) -> u64 {

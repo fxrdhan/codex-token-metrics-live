@@ -16,7 +16,7 @@ The release installs two command names:
 - Background refresh that reparses only changed session files.
 - Per-turn model attribution for estimated cost when sessions switch models.
 - Local-only HTTP server bound to `127.0.0.1`.
-- HTML dashboard injection compatible with `~/codex-token-metrics.html`.
+- Built-in HTML dashboard template, with optional override via `~/codex-token-metrics.html`.
 - JSON API for raw metrics at `/api/data`.
 - Server-Sent Events at `/events` for live dashboard refresh.
 - Built-in pricing overrides for recent GPT models, plus custom pricing through env vars.
@@ -103,7 +103,7 @@ This keeps normal startup in the millisecond range even with gigabytes of histor
 | --- | --- | --- |
 | `CODEX_METRICS_PORT` | `8787` | HTTP port. A positional port argument takes precedence. |
 | `PORT` | unset | Fallback HTTP port. |
-| `CODEX_METRICS_TEMPLATE` | `~/codex-token-metrics.html` | Dashboard HTML template path. |
+| `CODEX_METRICS_TEMPLATE` | `~/codex-token-metrics.html` | Optional dashboard HTML template override. The embedded template is used when this file is missing. |
 | `CODEX_METRICS_CACHE` | `~/.cache/codex-token-metrics-live/metrics-cache.json` | Metrics cache path. |
 | `CODEX_METRICS_REFRESH_DELAY_MS` | `100` | Delay before a background refresh starts. |
 | `CODEX_METRICS_POLL_MS` | `2000` | Filesystem polling interval for session changes. |

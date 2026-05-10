@@ -22,6 +22,8 @@ mkdir -p "$WORK_DIR/codex-token-metrics-live"
 install -m 755 target/release/codex-token-metrics-live "$WORK_DIR/codex-token-metrics-live/codex-token-metrics-live"
 ln -s codex-token-metrics-live "$WORK_DIR/codex-token-metrics-live/cdx-mtr"
 install -m 755 install.sh "$WORK_DIR/codex-token-metrics-live/install.sh"
+mkdir -p "$WORK_DIR/codex-token-metrics-live/assets"
+cp assets/codex-token-metrics.html "$WORK_DIR/codex-token-metrics-live/assets/"
 cp README.md LICENSE CHANGELOG.md "$WORK_DIR/codex-token-metrics-live/"
 printf '%s\n' "$VERSION" > "$WORK_DIR/codex-token-metrics-live/VERSION"
 
