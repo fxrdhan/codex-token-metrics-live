@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.1
+
+- Add `cdx-mtr` as a default installed command through a symlink.
+- Include `install.sh` in release archives.
+- Update installation docs to use `cdx-mtr` as the default command.
+
 ## v0.1.0
 
 - Initial Rust binary release.

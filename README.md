@@ -2,7 +2,12 @@
 
 Native local web dashboard for Codex session token usage and estimated model cost.
 
-`codex-token-metrics-live` scans Codex JSONL session logs, aggregates token usage by day, model, and session, then serves a live dashboard on `127.0.0.1`. It is built as a small Rust binary so the dashboard opens immediately and heavy log parsing happens through an incremental cache.
+`cdx-mtr` scans Codex JSONL session logs, aggregates token usage by day, model, and session, then serves a live dashboard on `127.0.0.1`. It is built as a small Rust binary so the dashboard opens immediately and heavy log parsing happens through an incremental cache.
+
+The release installs two command names:
+
+- `cdx-mtr`, the short default command.
+- `codex-token-metrics-live`, the descriptive full command.
 
 ## Features
 
@@ -24,13 +29,14 @@ curl -L -o /tmp/codex-token-metrics-live.tar.gz \
   https://github.com/fxrdhan/codex-token-metrics-live/releases/latest/download/codex-token-metrics-live-x86_64-unknown-linux-gnu.tar.gz
 
 tar -xzf /tmp/codex-token-metrics-live.tar.gz -C /tmp
-install -m 755 /tmp/codex-token-metrics-live/codex-token-metrics-live ~/.local/bin/codex-token-metrics-live
+/tmp/codex-token-metrics-live/install.sh
 ```
 
-Optional alias:
+Manual install:
 
 ```bash
-alias cdx-mtr='codex-token-metrics-live'
+install -m 755 /tmp/codex-token-metrics-live/codex-token-metrics-live ~/.local/bin/codex-token-metrics-live
+ln -sfn codex-token-metrics-live ~/.local/bin/cdx-mtr
 ```
 
 ## Usage
@@ -38,13 +44,13 @@ alias cdx-mtr='codex-token-metrics-live'
 Start on the default port, `8787`:
 
 ```bash
-codex-token-metrics-live
+cdx-mtr
 ```
 
 Start on a custom port:
 
 ```bash
-codex-token-metrics-live 9888
+cdx-mtr 9888
 ```
 
 Open the printed URL:
@@ -105,7 +111,7 @@ Example custom pricing:
 ```bash
 CODEX_METRICS_RATES_JSON='{
   "gpt-5.5": { "input": 5.0, "cachedInput": 0.5, "output": 30.0 }
-}' codex-token-metrics-live
+}' cdx-mtr
 ```
 
 Rates are USD per 1M tokens.
@@ -122,6 +128,14 @@ The binary will be at:
 
 ```text
 target/release/codex-token-metrics-live
+```
+
+Install from source:
+
+```bash
+cargo build --release
+install -m 755 target/release/codex-token-metrics-live ~/.local/bin/codex-token-metrics-live
+ln -sfn codex-token-metrics-live ~/.local/bin/cdx-mtr
 ```
 
 ## Release Packaging

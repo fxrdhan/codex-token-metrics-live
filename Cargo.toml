@@ -1,6 +1,6 @@
 [package]
 name = "codex-token-metrics-live"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Native local dashboard for Codex token usage and estimated cost metrics"
 license = "MIT"
