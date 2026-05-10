@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.0
+
+- Attribute token usage and estimated cost to the active model for each turn.
+- Use `last_token_usage` when available and fall back to cumulative token deltas.
+- Skip duplicate token-count snapshots so rate-limit-only updates do not double count usage.
+- Rebuild the metrics cache with the new per-model turn attribution format.
+
 ## v0.1.1
 
 - Add `cdx-mtr` as a default installed command through a symlink.

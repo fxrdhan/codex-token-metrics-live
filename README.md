@@ -14,6 +14,7 @@ The release installs two command names:
 - Native Rust command with no Node or Bun runtime dependency.
 - Instant first response from a cached snapshot.
 - Background refresh that reparses only changed session files.
+- Per-turn model attribution for estimated cost when sessions switch models.
 - Local-only HTTP server bound to `127.0.0.1`.
 - HTML dashboard injection compatible with `~/codex-token-metrics.html`.
 - JSON API for raw metrics at `/api/data`.
@@ -72,6 +73,8 @@ It looks for files named `rollout-*.jsonl` and extracts:
 - session timestamps
 - session IDs
 - model names and turn counts
+
+Costs are attributed to the model active for each turn. When Codex logs include `last_token_usage`, that value is used directly; otherwise the command falls back to the positive delta between cumulative `total_token_usage` snapshots.
 
 ## Cache
 

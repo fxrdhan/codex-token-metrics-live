@@ -12,7 +12,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-const CACHE_VERSION: u32 = 2;
+const CACHE_VERSION: u32 = 3;
 
 #[derive(Clone)]
 struct Config {
@@ -33,7 +33,7 @@ struct Pricing {
     output: f64,
 }
 
-#[derive(Clone, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default, rename_all = "camelCase")]
 struct Totals {
     input: u64,
@@ -151,6 +151,7 @@ struct Session {
     total: u64,
     models: Vec<String>,
     primary_model: Option<String>,
+    model_usage: BTreeMap<String, Totals>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Default)]
@@ -646,25 +647,40 @@ fn aggregate_metrics(
     let mut sessions_with_cost = Vec::with_capacity(sessions.len());
 
     for mut session in sessions {
-        let pricing = pricing_for_model(config, session.primary_model.as_deref());
-        let estimated_cost = estimate_cost(
-            session.input,
-            session.cached_input,
-            session.output,
-            session.reasoning_output,
-            &pricing,
-        );
+        let mut session_estimated_cost = EstimatedCost::default();
+        let model_usage = session_model_usage(&session);
+        for (model, usage) in &model_usage {
+            let pricing = pricing_for_model(config, Some(model));
+            let estimated_cost = estimate_cost(
+                usage.input,
+                usage.cached_input,
+                usage.output,
+                usage.reasoning_output,
+                &pricing,
+            );
 
-        cost_totals.input_cost += estimated_cost.input_cost;
-        cost_totals.cached_input_cost += estimated_cost.cached_input_cost;
-        cost_totals.output_cost += estimated_cost.output_cost;
-        cost_totals.total_cost += estimated_cost.total_cost;
-        cost_totals.uncached_input_tokens = cost_totals
-            .uncached_input_tokens
-            .saturating_add(estimated_cost.uncached_input_tokens);
-        cost_totals.billed_output_tokens = cost_totals
-            .billed_output_tokens
-            .saturating_add(estimated_cost.billed_output_tokens);
+            cost_totals.input_cost += estimated_cost.input_cost;
+            cost_totals.cached_input_cost += estimated_cost.cached_input_cost;
+            cost_totals.output_cost += estimated_cost.output_cost;
+            cost_totals.total_cost += estimated_cost.total_cost;
+            cost_totals.uncached_input_tokens = cost_totals
+                .uncached_input_tokens
+                .saturating_add(estimated_cost.uncached_input_tokens);
+            cost_totals.billed_output_tokens = cost_totals
+                .billed_output_tokens
+                .saturating_add(estimated_cost.billed_output_tokens);
+            add_estimated_cost(&mut session_estimated_cost, &estimated_cost);
+
+            let stat = model_stats
+                .entry(model.clone())
+                .or_insert_with(|| ModelUsage {
+                    model: model.clone(),
+                    ..ModelUsage::default()
+                });
+            stat.sessions += 1;
+            stat.total_tokens = stat.total_tokens.saturating_add(usage.total);
+            add_estimated_cost(&mut stat.estimated_cost, &estimated_cost);
+        }
 
         if let Some(day) = session
             .start_ts
@@ -683,21 +699,10 @@ fn aggregate_metrics(
                 .reasoning_output
                 .saturating_add(session.reasoning_output);
             row.total = row.total.saturating_add(session.total);
-            add_estimated_cost(&mut row.estimated_cost, &estimated_cost);
+            add_estimated_cost(&mut row.estimated_cost, &session_estimated_cost);
         }
 
-        if let Some(model) = session.primary_model.clone() {
-            let stat = model_stats
-                .entry(model.clone())
-                .or_insert_with(|| ModelUsage {
-                    model,
-                    ..ModelUsage::default()
-                });
-            stat.sessions += 1;
-            stat.total_tokens = stat.total_tokens.saturating_add(session.total);
-            add_estimated_cost(&mut stat.estimated_cost, &estimated_cost);
-        }
-
+        let model_label = session_model_label(&session, &model_usage);
         sessions_with_cost.push((
             TopSession {
                 session_id: std::mem::take(&mut session.session_id),
@@ -707,8 +712,8 @@ fn aggregate_metrics(
                 output: session.output,
                 reasoning_output: session.reasoning_output,
                 total: session.total,
-                model: session.primary_model.take(),
-                estimated_cost,
+                model: model_label,
+                estimated_cost: session_estimated_cost,
             },
             session.start_ts,
             session.end_ts,
@@ -778,6 +783,40 @@ fn add_estimated_cost(target: &mut EstimatedCost, add: &EstimatedCost) {
     target.total_cost += add.total_cost;
 }
 
+fn session_model_usage(session: &Session) -> BTreeMap<String, Totals> {
+    if !session.model_usage.is_empty() {
+        return session.model_usage.clone();
+    }
+
+    let model = session
+        .primary_model
+        .clone()
+        .unwrap_or_else(|| "unknown".to_string());
+    BTreeMap::from([(
+        model,
+        Totals {
+            input: session.input,
+            cached_input: session.cached_input,
+            output: session.output,
+            reasoning_output: session.reasoning_output,
+            total: session.total,
+        },
+    )])
+}
+
+fn session_model_label(
+    session: &Session,
+    model_usage: &BTreeMap<String, Totals>,
+) -> Option<String> {
+    if model_usage.len() == 1 {
+        return model_usage.keys().next().cloned();
+    }
+    if model_usage.len() > 1 {
+        return Some("mixed".to_string());
+    }
+    session.primary_model.clone()
+}
+
 fn parse_session_file(file: &Path) -> ParsedFile {
     let input = match File::open(file) {
         Ok(file) => file,
@@ -795,8 +834,11 @@ fn parse_session_file(file: &Path) -> ParsedFile {
     let mut total = 0_u64;
     let mut has_token_usage = false;
     let mut models = Vec::<String>::new();
+    let mut model_usage: BTreeMap<String, Totals> = BTreeMap::new();
     let mut model_turn_counts: BTreeMap<String, u64> = BTreeMap::new();
     let mut primary_model = None;
+    let mut current_model = None;
+    let mut previous_total_usage: Option<Totals> = None;
 
     for line in reader.lines().map_while(Result::ok) {
         if line.trim().is_empty() {
@@ -842,6 +884,7 @@ fn parse_session_file(file: &Path) -> ParsedFile {
                 if primary_model.is_none() {
                     primary_model = Some(model.clone());
                 }
+                current_model = Some(model.clone());
                 *model_turn_counts.entry(model).or_insert(0) += 1;
             }
         }
@@ -851,17 +894,45 @@ fn parse_session_file(file: &Path) -> ParsedFile {
         {
             continue;
         }
-        let usage = match row.pointer("/payload/info/total_token_usage") {
-            Some(Value::Object(usage)) => usage,
-            _ => continue,
+        let total_usage = match parse_usage(row.pointer("/payload/info/total_token_usage")) {
+            Some(usage) => usage,
+            None => continue,
         };
 
         has_token_usage = true;
-        input = input.max(value_u64(usage.get("input_tokens")));
-        cached_input = cached_input.max(value_u64(usage.get("cached_input_tokens")));
-        output = output.max(value_u64(usage.get("output_tokens")));
-        reasoning_output = reasoning_output.max(value_u64(usage.get("reasoning_output_tokens")));
-        total = total.max(value_u64(usage.get("total_tokens")));
+        input = input.max(total_usage.input);
+        cached_input = cached_input.max(total_usage.cached_input);
+        output = output.max(total_usage.output);
+        reasoning_output = reasoning_output.max(total_usage.reasoning_output);
+        total = total.max(total_usage.total);
+
+        if previous_total_usage.as_ref() == Some(&total_usage) {
+            continue;
+        }
+
+        let delta_usage = previous_total_usage
+            .as_ref()
+            .map(|previous| usage_delta(&total_usage, previous))
+            .unwrap_or_else(|| total_usage.clone());
+        previous_total_usage = Some(total_usage);
+
+        let last_usage = parse_usage(row.pointer("/payload/info/last_token_usage"));
+        let turn_usage = match last_usage {
+            Some(last_usage) if usage_has_billable_tokens(&last_usage) => last_usage,
+            _ => delta_usage,
+        };
+        if !usage_has_billable_tokens(&turn_usage) {
+            continue;
+        }
+
+        let model = current_model
+            .clone()
+            .or_else(|| primary_model.clone())
+            .unwrap_or_else(|| "unknown".to_string());
+        if !models.iter().any(|known| known == &model) {
+            models.push(model.clone());
+        }
+        add_totals(model_usage.entry(model).or_default(), &turn_usage);
     }
 
     let session = if has_token_usage {
@@ -883,6 +954,7 @@ fn parse_session_file(file: &Path) -> ParsedFile {
             total,
             models,
             primary_model,
+            model_usage,
         })
     } else {
         None
@@ -1158,6 +1230,43 @@ fn value_u64(value: Option<&Value>) -> u64 {
     }
 }
 
+fn parse_usage(value: Option<&Value>) -> Option<Totals> {
+    let Value::Object(usage) = value? else {
+        return None;
+    };
+    Some(Totals {
+        input: value_u64(usage.get("input_tokens")),
+        cached_input: value_u64(usage.get("cached_input_tokens")),
+        output: value_u64(usage.get("output_tokens")),
+        reasoning_output: value_u64(usage.get("reasoning_output_tokens")),
+        total: value_u64(usage.get("total_tokens")),
+    })
+}
+
+fn usage_delta(current: &Totals, previous: &Totals) -> Totals {
+    Totals {
+        input: current.input.saturating_sub(previous.input),
+        cached_input: current.cached_input.saturating_sub(previous.cached_input),
+        output: current.output.saturating_sub(previous.output),
+        reasoning_output: current
+            .reasoning_output
+            .saturating_sub(previous.reasoning_output),
+        total: current.total.saturating_sub(previous.total),
+    }
+}
+
+fn usage_has_billable_tokens(usage: &Totals) -> bool {
+    usage.input > 0 || usage.cached_input > 0 || usage.output > 0 || usage.reasoning_output > 0
+}
+
+fn add_totals(target: &mut Totals, add: &Totals) {
+    target.input = target.input.saturating_add(add.input);
+    target.cached_input = target.cached_input.saturating_add(add.cached_input);
+    target.output = target.output.saturating_add(add.output);
+    target.reasoning_output = target.reasoning_output.saturating_add(add.reasoning_output);
+    target.total = target.total.saturating_add(add.total);
+}
+
 fn parse_ts_millis(raw: &str) -> Option<i64> {
     DateTime::parse_from_rfc3339(raw)
         .ok()
@@ -1185,4 +1294,51 @@ fn unix_ms() -> u128 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn attributes_token_usage_to_active_turn_model() {
+        let path =
+            env::temp_dir().join(format!("codex-token-metrics-live-test-{}.jsonl", unix_ms()));
+        let jsonl = [
+            r#"{"timestamp":"2026-05-10T00:00:00.000Z","type":"session_meta","payload":{"id":"test-session","timestamp":"2026-05-10T00:00:00.000Z"}}"#,
+            r#"{"timestamp":"2026-05-10T00:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.5"}}"#,
+            r#"{"timestamp":"2026-05-10T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":10,"output_tokens":20,"reasoning_output_tokens":5,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":10,"output_tokens":20,"reasoning_output_tokens":5,"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-05-10T00:00:03.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":10,"output_tokens":20,"reasoning_output_tokens":5,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":10,"output_tokens":20,"reasoning_output_tokens":5,"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-05-10T00:00:04.000Z","type":"turn_context","payload":{"model":"gpt-5.4"}}"#,
+            r#"{"timestamp":"2026-05-10T00:00:05.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":250,"cached_input_tokens":60,"output_tokens":50,"reasoning_output_tokens":10,"total_tokens":300},"last_token_usage":{"input_tokens":150,"cached_input_tokens":50,"output_tokens":30,"reasoning_output_tokens":5,"total_tokens":180}}}}"#,
+        ]
+        .join("\n");
+
+        fs::write(&path, jsonl).expect("write test session");
+        let parsed = parse_session_file(&path);
+        fs::remove_file(&path).ok();
+
+        let session = parsed.session.expect("session with usage");
+        assert_eq!(session.input, 250);
+        assert_eq!(session.cached_input, 60);
+        assert_eq!(session.output, 50);
+        assert_eq!(session.reasoning_output, 10);
+        assert_eq!(session.total, 300);
+        assert_eq!(parsed.model_turn_counts.get("gpt-5.5"), Some(&1));
+        assert_eq!(parsed.model_turn_counts.get("gpt-5.4"), Some(&1));
+
+        let gpt_55 = session.model_usage.get("gpt-5.5").expect("gpt-5.5 usage");
+        assert_eq!(gpt_55.input, 100);
+        assert_eq!(gpt_55.cached_input, 10);
+        assert_eq!(gpt_55.output, 20);
+        assert_eq!(gpt_55.reasoning_output, 5);
+        assert_eq!(gpt_55.total, 120);
+
+        let gpt_54 = session.model_usage.get("gpt-5.4").expect("gpt-5.4 usage");
+        assert_eq!(gpt_54.input, 150);
+        assert_eq!(gpt_54.cached_input, 50);
+        assert_eq!(gpt_54.output, 30);
+        assert_eq!(gpt_54.reasoning_output, 5);
+        assert_eq!(gpt_54.total, 180);
+    }
 }
